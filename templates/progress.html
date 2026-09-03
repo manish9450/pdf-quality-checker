@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Analyzing... - PDF Quality Checker</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Analyzing PDF</h1>
+        <p class="subtitle">{{ filename }}</p>
+
+        <div class="progress-wrap">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill" style="width: 0%;"></div>
+            </div>
+            <p id="progress-text">Starting...</p>
+        </div>
+
+        <p class="hint">This runs entirely on your machine. Larger PDFs with OCR can take a while -- feel free to leave this tab open and come back.</p>
+
+        <div id="error-box" class="error-box" style="display:none;"></div>
+    </div>
+
+    <script>
+        const jobId = "{{ job_id }}";
+
+        function poll() {
+            fetch(`/status/${jobId}`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'error') {
+                        document.getElementById('error-box').style.display = 'block';
+                        document.getElementById('error-box').textContent = 'Error: ' + data.error;
+                        return;
+                    }
+                    if (data.status === 'done') {
+                        window.location.href = `/results/${jobId}`;
+                        return;
+                    }
+                    const total = data.total || 0;
+                    const current = data.current || 0;
+                    const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+                    document.getElementById('progress-fill').style.width = pct + '%';
+                    document.getElementById('progress-text').textContent =
+                        total > 0 ? `Page ${current} of ${total} (${pct}%)` : 'Starting...';
+                    setTimeout(poll, 1000);
+                })
+                .catch(() => setTimeout(poll, 2000));
+        }
+        poll();
+    </script>
+</body>
+</html>

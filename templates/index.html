@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>PDF Quality Checker</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>PDF Quality Checker</h1>
+        <p class="subtitle">Runs 100% locally. Checks for blank, blurry, low-contrast, skewed, and unreadable pages.</p>
+
+        <form action="/analyze" method="post" enctype="multipart/form-data" id="upload-form">
+            <div class="field">
+                <label for="pdf_file">PDF file</label>
+                <input type="file" id="pdf_file" name="pdf_file" accept="application/pdf" required>
+            </div>
+
+            <div class="field">
+                <label for="lang">Document language / region</label>
+                <select id="lang" name="lang">
+                    <option value="hindi_belt">Hindi belt (UP, Bihar, MP, Rajasthan, Delhi...)</option>
+                    <option value="west">West (Maharashtra, Gujarat)</option>
+                    <option value="south">South (Tamil Nadu, AP/Telangana, Karnataka, Kerala)</option>
+                    <option value="east">East (West Bengal, Odisha, Assam)</option>
+                    <option value="north">North (Punjab, J&K)</option>
+                    <option value="all_india">All languages (slow -- ~5x longer, use if unsure)</option>
+                </select>
+                <p class="hint">Pick the region matching the document's origin for best speed & accuracy.</p>
+            </div>
+
+            <button type="submit" id="submit-btn">Analyze PDF</button>
+        </form>
+    </div>
+
+    <script>
+        document.getElementById('upload-form').addEventListener('submit', function() {
+            document.getElementById('submit-btn').textContent = 'Uploading...';
+            document.getElementById('submit-btn').disabled = true;
+        });
+    </script>
+</body>
+</html>

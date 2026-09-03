@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Results - PDF Quality Checker</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container wide">
+        <h1>Analysis Results</h1>
+        <p class="subtitle">{{ filename }} &middot; OCR language(s): {{ lang }}</p>
+
+        <div class="summary-grid">
+            <div class="stat"><span class="stat-num">{{ summary.total_pages }}</span><span class="stat-label">Total pages</span></div>
+            <div class="stat good"><span class="stat-num">{{ summary.clean_pages }}</span><span class="stat-label">Clean</span></div>
+            <div class="stat warn"><span class="stat-num">{{ summary.blank_pages }}</span><span class="stat-label">Blank</span></div>
+            <div class="stat warn"><span class="stat-num">{{ summary.solid_dark_pages }}</span><span class="stat-label">Solid dark</span></div>
+            <div class="stat warn"><span class="stat-num">{{ summary.blurry_pages }}</span><span class="stat-label">Blurry</span></div>
+            <div class="stat warn"><span class="stat-num">{{ summary.low_contrast_pages }}</span><span class="stat-label">Low contrast</span></div>
+            <div class="stat warn"><span class="stat-num">{{ summary.skewed_pages }}</span><span class="stat-label">Skewed</span></div>
+            <div class="stat warn"><span class="stat-num">{{ summary.low_ocr_confidence_pages }}</span><span class="stat-label">Low OCR confidence</span></div>
+            <div class="stat bad"><span class="stat-num">{{ summary.likely_unreadable_pages }}</span><span class="stat-label">Likely unreadable</span></div>
+        </div>
+
+        <div class="downloads">
+            <a href="/download/{{ job_id }}/json" class="btn-secondary">Download JSON report</a>
+            <a href="/download/{{ job_id }}/csv" class="btn-secondary">Download CSV report</a>
+            <a href="/" class="btn-secondary">Analyze another PDF</a>
+        </div>
+
+        <h2>Flagged pages</h2>
+        {% set flagged = pages | selectattr('issues') | list %}
+        {% if flagged | length == 0 %}
+            <p class="hint">No issues found -- every page looks clean.</p>
+        {% else %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Page</th>
+                    <th>Issues</th>
+                    <th>Blur score</th>
+                    <th>Contrast</th>
+                    <th>Skew (deg)</th>
+                    <th>OCR confidence</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in flagged %}
+                <tr>
+                    <td>{{ p.page }}</td>
+                    <td>{% for issue in p.issues %}<span class="tag">{{ issue }}</span>{% endfor %}</td>
+                    <td>{{ p.blur_score }}</td>
+                    <td>{{ p.contrast_score }}</td>
+                    <td>{{ p.skew_angle }}</td>
+                    <td>{{ p.ocr_confidence }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </div>
+</body>
+</html>
