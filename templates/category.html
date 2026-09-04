@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ label }} - PDF Quality Checker</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container wide">
+        <a href="/results/{{ job_id }}" class="back-link">&larr; Back to results</a>
+
+        <h1>{{ label }}</h1>
+        <p class="subtitle">{{ filename }} &middot; {{ pages | length }} page{{ 's' if pages | length != 1 else '' }}</p>
+
+        {% if pages | length == 0 %}
+            <p class="hint">No pages in this category.</p>
+        {% else %}
+        <p class="hint">If a page here looks fine to you (readable, not actually blank/blurry/etc.), click "Mark as OK" to correct it -- the summary counts and downloadable reports update immediately. Click a thumbnail to view it full-size.</p>
+
+        <div class="page-card-list">
+            {% for p in pages %}
+            <div class="page-card">
+                <a href="/thumbnail/{{ job_id }}/{{ p.page }}" target="_blank" class="page-card-thumb">
+                    <img src="/thumbnail/{{ job_id }}/{{ p.page }}" alt="Page {{ p.page }}" loading="lazy">
+                </a>
+                <div class="page-card-info">
+                    <div class="page-card-header">
+                        <span class="page-card-num">Page {{ p.page }}</span>
+                        {% for issue in p.issues %}<span class="tag">{{ issue }}</span>{% endfor %}
+                    </div>
+                    <div class="page-card-stats">
+                        <div><span class="stat-key">Blur</span><span class="stat-val">{{ p.blur_score }}</span></div>
+                        <div><span class="stat-key">Contrast</span><span class="stat-val">{{ p.contrast_score }}</span></div>
+                        <div><span class="stat-key">Skew</span><span class="stat-val">{{ p.skew_angle }}&deg;</span></div>
+                        <div><span class="stat-key">OCR confidence</span><span class="stat-val">{{ p.ocr_confidence }}</span></div>
+                        <div><span class="stat-key">Word count</span><span class="stat-val">{{ p.word_count }}</span></div>
+                    </div>
+                    <form action="/results/{{ job_id }}/override" method="post" class="inline-form">
+                        <input type="hidden" name="page" value="{{ p.page }}">
+                        <input type="hidden" name="category" value="{{ category }}">
+                        <button type="submit" class="btn-mark-ok">Mark as OK</button>
+                    </form>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+</body>
+</html>

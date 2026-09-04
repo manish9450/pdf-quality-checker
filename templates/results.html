@@ -13,13 +13,32 @@
         <div class="summary-grid">
             <div class="stat"><span class="stat-num">{{ summary.total_pages }}</span><span class="stat-label">Total pages</span></div>
             <div class="stat good"><span class="stat-num">{{ summary.clean_pages }}</span><span class="stat-label">Clean</span></div>
-            <div class="stat warn"><span class="stat-num">{{ summary.blank_pages }}</span><span class="stat-label">Blank</span></div>
-            <div class="stat warn"><span class="stat-num">{{ summary.solid_dark_pages }}</span><span class="stat-label">Solid dark</span></div>
-            <div class="stat warn"><span class="stat-num">{{ summary.blurry_pages }}</span><span class="stat-label">Blurry</span></div>
-            <div class="stat warn"><span class="stat-num">{{ summary.low_contrast_pages }}</span><span class="stat-label">Low contrast</span></div>
-            <div class="stat warn"><span class="stat-num">{{ summary.skewed_pages }}</span><span class="stat-label">Skewed</span></div>
-            <div class="stat warn"><span class="stat-num">{{ summary.low_ocr_confidence_pages }}</span><span class="stat-label">Low OCR confidence</span></div>
-            <div class="stat bad"><span class="stat-num">{{ summary.likely_unreadable_pages }}</span><span class="stat-label">Likely unreadable</span></div>
+
+            {% set categories = [
+                ('blank', summary.blank_pages, 'Blank'),
+                ('solid_dark', summary.solid_dark_pages, 'Solid dark'),
+                ('blurry', summary.blurry_pages, 'Blurry'),
+                ('low_contrast', summary.low_contrast_pages, 'Low contrast'),
+                ('skewed', summary.skewed_pages, 'Skewed'),
+                ('low_ocr_confidence', summary.low_ocr_confidence_pages, 'Low OCR confidence'),
+            ] %}
+            {% for key, count, label in categories %}
+                {% if count > 0 %}
+                <a class="stat warn stat-link" href="/results/{{ job_id }}/category/{{ key }}">
+                    <span class="stat-num">{{ count }}</span><span class="stat-label">{{ label }}</span>
+                </a>
+                {% else %}
+                <div class="stat"><span class="stat-num">{{ count }}</span><span class="stat-label">{{ label }}</span></div>
+                {% endif %}
+            {% endfor %}
+
+            {% if summary.likely_unreadable_pages > 0 %}
+            <a class="stat bad stat-link" href="/results/{{ job_id }}/category/likely_unreadable">
+                <span class="stat-num">{{ summary.likely_unreadable_pages }}</span><span class="stat-label">Likely unreadable</span>
+            </a>
+            {% else %}
+            <div class="stat"><span class="stat-num">{{ summary.likely_unreadable_pages }}</span><span class="stat-label">Likely unreadable</span></div>
+            {% endif %}
         </div>
 
         <div class="downloads">

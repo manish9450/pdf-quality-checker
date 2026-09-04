@@ -1,8 +1,6 @@
 
 
 
-
-
 """
 quality_checks.py
 Core image-quality functions used to judge whether a scanned/photographed
@@ -209,10 +207,26 @@ def classify_page_type(gray, word_count, ocr_conf):
 
 
 def analyze_page(pil_image, blur_thresh=30.0, contrast_thresh=80.0,
-                  skew_thresh=5.0, ocr_conf_thresh=40.0, ocr_lang="eng+hin"):
+                  skew_thresh=5.0, ocr_conf_thresh=40.0, ocr_lang="eng+hin",
+                  ink_definite_blank_thresh=0.0005, ink_ambiguous_thresh=0.004,
+                  blank_ocr_word_override=3):
     """
     Run the full quality pipeline on a single page image.
     Returns a dict report for that page.
+
+    Blank detection is two-tier, not a single pixel threshold:
+    - ink_ratio <= ink_definite_blank_thresh: obviously blank (confirmed
+      against real scanned documents -- genuine blank pages measured
+      0.0000-0.0015 ink ratio). Skip OCR entirely here, it's wasted work.
+    - ink_definite_blank_thresh < ink_ratio <= ink_ambiguous_thresh:
+      genuinely ambiguous zone. A real bank-statement page (mostly
+      whitespace, one small transaction table) measured 0.0019 -- barely
+      above a genuine blank page's 0.0015. No fixed pixel threshold can
+      safely separate cases this close, so instead of guessing, OCR runs
+      as a tiebreaker: if it finds a handful of real words, the page is
+      NOT blank, regardless of how sparse the ink is.
+    - ink_ratio > ink_ambiguous_thresh: confidently not blank, no
+      tiebreaker needed.
     """
     cv_img = pil_to_cv(pil_image)
     gray_full = to_gray(cv_img)
@@ -223,7 +237,16 @@ def analyze_page(pil_image, blur_thresh=30.0, contrast_thresh=80.0,
 
     # Blank check uses a lightly denoised version so small dust specks
     # left after cropping don't cause a false "not blank" result.
-    is_blank, ink_ratio_blank = blank_page_check(denoise_for_blank_check(gray))
+    denoised = denoise_for_blank_check(gray)
+    ink_pixels = int(np.sum(denoised < 200))
+    ink_ratio_blank = round(float(ink_pixels / denoised.size), 4)
+
+    if ink_ratio_blank <= ink_definite_blank_thresh:
+        blank_zone = "definite"
+    elif ink_ratio_blank <= ink_ambiguous_thresh:
+        blank_zone = "ambiguous"
+    else:
+        blank_zone = "not_blank"
 
     # Solid-dark-page check -- a different failure mode than blur
     # (e.g. scanner bed showing through, unopened section).
@@ -232,13 +255,31 @@ def analyze_page(pil_image, blur_thresh=30.0, contrast_thresh=80.0,
     b_score = blur_score(gray)
     c_score = contrast_score(gray)
 
-    # OCR/blur/contrast/skew verdicts are meaningless on blank or
-    # solid-dark pages -- skew detection in particular tends to latch
-    # onto scan noise and return a spurious boundary angle when there's
-    # no real text to anchor on.
+    # Only skip OCR when we're already confident there's nothing to read
+    # (definite blank or solid dark). Ambiguous-zone and normal pages
+    # both need it -- ambiguous as a tiebreaker, normal pages for the
+    # regular low_ocr_confidence check further down.
+    need_ocr = (not is_solid_dark) and (blank_zone != "definite")
+    conf, word_count = ocr_confidence(cv_img, lang=ocr_lang) if need_ocr else (0.0, 0)
+
+    if is_solid_dark:
+        is_blank = False  # solid dark is reported as its own separate category
+    elif blank_zone == "definite":
+        is_blank = True
+    elif blank_zone == "ambiguous":
+        is_blank = word_count < blank_ocr_word_override  # OCR tiebreaker
+    else:
+        is_blank = False
+
+    # Once the blank verdict is final, zero out OCR results for blank/
+    # dark pages so the report stays consistent (no stray OCR readings
+    # attributed to a page we're calling blank).
     skip_content_checks = is_blank or is_solid_dark
+    if skip_content_checks:
+        conf, word_count = 0.0, 0
+
     skew = 0.0 if skip_content_checks else skew_angle(gray)
-    conf, word_count = (0.0, 0) if skip_content_checks else ocr_confidence(cv_img, lang=ocr_lang)
+
     if is_blank:
         page_type = "blank"
     elif is_solid_dark:
@@ -294,4 +335,3 @@ def analyze_page(pil_image, blur_thresh=30.0, contrast_thresh=80.0,
         "issues": issues,
         "likely_unreadable": likely_unreadable,
     }
-

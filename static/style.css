@@ -142,6 +142,122 @@ button:disabled {
 .stat.warn { background: #fdf6e8; }
 .stat.bad { background: #fdecea; }
 
+a.stat-link {
+    text-decoration: none;
+    color: inherit;
+    display: block;
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+a.stat-link:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 10px rgba(0,0,0,0.08);
+}
+
+.back-link {
+    display: inline-block;
+    color: #444;
+    text-decoration: none;
+    font-size: 13px;
+    margin-bottom: 16px;
+    font-weight: 600;
+}
+
+.back-link:hover {
+    text-decoration: underline;
+}
+
+.inline-form {
+    margin: 0;
+}
+
+.btn-mark-ok {
+    background: #eaf7ee;
+    color: #1c6b32;
+    border: 1px solid #cdeed9;
+    padding: 5px 10px;
+    border-radius: 5px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.btn-mark-ok:hover {
+    background: #d8f0e0;
+}
+
+.page-card-list {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.page-card {
+    display: flex;
+    gap: 18px;
+    background: #fafafa;
+    border: 1px solid #eee;
+    border-radius: 10px;
+    padding: 14px;
+    align-items: flex-start;
+}
+
+.page-card-thumb {
+    flex-shrink: 0;
+    display: block;
+    width: 130px;
+    height: 170px;
+    overflow: hidden;
+    border-radius: 6px;
+    border: 1px solid #ddd;
+    background: #fff;
+}
+
+.page-card-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: top;
+    display: block;
+}
+
+.page-card-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.page-card-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+
+.page-card-num {
+    font-weight: 700;
+    font-size: 15px;
+}
+
+.page-card-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 8px 16px;
+    margin-bottom: 12px;
+    font-size: 13px;
+}
+
+.page-card-stats .stat-key {
+    color: #888;
+    margin-right: 6px;
+}
+
+.page-card-stats .stat-val {
+    font-weight: 600;
+}
+
 .stat-num {
     display: block;
     font-size: 22px;

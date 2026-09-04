@@ -29,8 +29,10 @@ from quality_checks import analyze_page
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 REPORTS_DIR = os.path.join(BASE_DIR, "reports")
+THUMBNAILS_DIR = os.path.join(BASE_DIR, "thumbnails")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(REPORTS_DIR, exist_ok=True)
+os.makedirs(THUMBNAILS_DIR, exist_ok=True)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500MB upload limit
@@ -63,6 +65,63 @@ def pdf_to_page_images(pdf_path, dpi=300):
     doc.close()
 
 
+CSV_FIELDNAMES = ["page", "blank", "ink_ratio", "solid_dark_page", "dark_ratio",
+                   "blur_score", "is_blurry", "contrast_score", "is_low_contrast",
+                   "skew_angle", "is_skewed", "ocr_confidence", "word_count",
+                   "page_type", "likely_unreadable", "issues", "human_overrides"]
+
+
+def compute_summary(pages):
+    return {
+        "total_pages": len(pages),
+        "clean_pages": sum(1 for r in pages if not r["issues"]),
+        "blank_pages": sum(1 for r in pages if r["blank"]),
+        "solid_dark_pages": sum(1 for r in pages if r["solid_dark_page"]),
+        "blurry_pages": sum(1 for r in pages if r["is_blurry"]),
+        "low_contrast_pages": sum(1 for r in pages if r["is_low_contrast"]),
+        "skewed_pages": sum(1 for r in pages if r["is_skewed"]),
+        "low_ocr_confidence_pages": sum(1 for r in pages if r.get("is_low_ocr_conf", False)),
+        "likely_unreadable_pages": sum(1 for r in pages if r["likely_unreadable"]),
+    }
+
+
+def write_reports(json_path, csv_path, summary, pages):
+    """(Re)writes the JSON + CSV reports to disk. Called both after the
+    initial analysis and after any human override, so downloaded reports
+    always reflect the current, possibly-corrected state."""
+    with open(json_path, "w") as f:
+        json.dump({"summary": summary, "pages": pages}, f, indent=2)
+
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
+        writer.writeheader()
+        for r in pages:
+            row = {k: r.get(k) for k in CSV_FIELDNAMES}
+            row["issues"] = ";".join(r["issues"])
+            row["human_overrides"] = "; ".join(
+                f"{o['issue']} ({o['timestamp']})" for o in r.get("human_overrides", [])
+            )
+            writer.writerow(row)
+
+
+def save_thumbnail(job_id, page_num, pil_img, target_width=900):
+    """
+    Saves a resized JPEG preview of a page so the web UI can show it
+    directly in the category views, instead of the person having to
+    open the original PDF and hunt for that page number themselves.
+    Only called for flagged pages (see run_analysis) -- generating and
+    storing a thumbnail for every clean page too would be wasted work
+    and disk space for large documents where most pages are fine.
+    """
+    job_thumb_dir = os.path.join(THUMBNAILS_DIR, job_id)
+    os.makedirs(job_thumb_dir, exist_ok=True)
+    w, h = pil_img.size
+    target_h = int(h * (target_width / w))
+    thumb = pil_img.resize((target_width, target_h), Image.LANCZOS)
+    thumb.convert("RGB").save(os.path.join(job_thumb_dir, f"page_{page_num}.jpg"),
+                               "JPEG", quality=80)
+
+
 def run_analysis(job_id, pdf_path, ocr_lang, original_filename):
     """Runs in a background thread; updates JOBS[job_id] as it progresses."""
     try:
@@ -78,43 +137,21 @@ def run_analysis(job_id, pdf_path, ocr_lang, original_filename):
         for page_num, pil_img in pdf_to_page_images(pdf_path):
             report = analyze_page(pil_img, ocr_lang=ocr_lang)
             report["page"] = page_num
+            report["human_overrides"] = []  # audit trail of any manual corrections
+            if report["issues"]:
+                save_thumbnail(job_id, page_num, pil_img)
             results.append(report)
             with JOBS_LOCK:
                 JOBS[job_id]["current"] = page_num
 
-        total = len(results)
-        summary = {
-            "total_pages": total,
-            "clean_pages": sum(1 for r in results if not r["issues"]),
-            "blank_pages": sum(1 for r in results if r["blank"]),
-            "solid_dark_pages": sum(1 for r in results if r["solid_dark_page"]),
-            "blurry_pages": sum(1 for r in results if r["is_blurry"]),
-            "low_contrast_pages": sum(1 for r in results if r["is_low_contrast"]),
-            "skewed_pages": sum(1 for r in results if r["is_skewed"]),
-            "low_ocr_confidence_pages": sum(1 for r in results if r.get("is_low_ocr_conf", False)),
-            "likely_unreadable_pages": sum(1 for r in results if r["likely_unreadable"]),
-        }
+        summary = compute_summary(results)
 
         # Save JSON + CSV reports to disk, same as the CLI tool
         base = os.path.splitext(original_filename)[0]
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         json_path = os.path.join(REPORTS_DIR, f"{base}_{job_id}_{timestamp}.json")
         csv_path = os.path.join(REPORTS_DIR, f"{base}_{job_id}_{timestamp}.csv")
-
-        with open(json_path, "w") as f:
-            json.dump({"summary": summary, "pages": results}, f, indent=2)
-
-        fieldnames = ["page", "blank", "ink_ratio", "solid_dark_page", "dark_ratio",
-                      "blur_score", "is_blurry", "contrast_score", "is_low_contrast",
-                      "skew_angle", "is_skewed", "ocr_confidence", "word_count",
-                      "page_type", "likely_unreadable", "issues"]
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            for r in results:
-                row = {k: r.get(k) for k in fieldnames}
-                row["issues"] = ";".join(r["issues"])
-                writer.writerow(row)
+        write_reports(json_path, csv_path, summary, results)
 
         with JOBS_LOCK:
             JOBS[job_id]["status"] = "done"
@@ -187,6 +224,99 @@ def status(job_id):
     })
 
 
+CATEGORY_FIELDS = {
+    "blank": ("blank", "Blank pages"),
+    "solid_dark": ("solid_dark_page", "Solid dark pages"),
+    "blurry": ("is_blurry", "Blurry pages"),
+    "low_contrast": ("is_low_contrast", "Low contrast pages"),
+    "skewed": ("is_skewed", "Skewed pages"),
+    "low_ocr_confidence": ("is_low_ocr_conf", "Low OCR confidence pages"),
+    "likely_unreadable": ("likely_unreadable", "Likely unreadable pages"),
+}
+
+
+def clear_issue(page, category):
+    """
+    Mutates `page` to clear a human-overridden issue, then recomputes
+    every derived field (issues list, likely_unreadable) from the
+    updated booleans -- so the override propagates consistently
+    everywhere the page's status is shown, not just in the one category
+    view the person clicked from.
+
+    'likely_unreadable' is a special case: it's normally *derived* from
+    the other fields (blank, solid_dark, blurry+low_ocr_confidence,
+    low_contrast+low_ocr_confidence), so clearing it directly needs its
+    own override flag -- otherwise it would just get recomputed back to
+    True from the still-active underlying issues.
+    """
+    field, _ = CATEGORY_FIELDS[category]
+
+    if category == "likely_unreadable":
+        page["_unreadable_override"] = True
+    else:
+        page[field] = False
+
+    if page.get("_unreadable_override"):
+        page["likely_unreadable"] = False
+    else:
+        page["likely_unreadable"] = bool(
+            page.get("blank") or page.get("solid_dark_page")
+            or (page.get("is_blurry") and page.get("is_low_ocr_conf"))
+            or (page.get("is_low_contrast") and page.get("is_low_ocr_conf"))
+        )
+
+    issues = []
+    if page.get("blank"):
+        issues.append("blank")
+    if page.get("solid_dark_page"):
+        issues.append("solid_dark_page")
+    if page.get("is_blurry"):
+        issues.append("blurry")
+    if page.get("is_low_contrast"):
+        issues.append("low_contrast")
+    if page.get("is_skewed"):
+        issues.append("skewed")
+    if page.get("is_low_ocr_conf"):
+        issues.append("low_ocr_confidence")
+    page["issues"] = issues
+
+    page.setdefault("human_overrides", []).append({
+        "issue": category,
+        "note": "Marked OK by user",
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    })
+    return page
+
+
+@app.route("/results/<job_id>/override", methods=["POST"])
+def override(job_id):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if job is None or job.get("status") != "done":
+            return "Job not found or not ready", 404
+
+        try:
+            page_num = int(request.form.get("page", ""))
+        except ValueError:
+            return "Invalid page number", 400
+        category = request.form.get("category", "")
+        if category not in CATEGORY_FIELDS:
+            return "Unknown category", 400
+
+        target = next((p for p in job["pages"] if p["page"] == page_num), None)
+        if target is None:
+            return "Page not found", 404
+
+        clear_issue(target, category)
+        job["summary"] = compute_summary(job["pages"])
+
+        # Keep the downloadable reports in sync with the correction.
+        if job.get("json_path") and job.get("csv_path"):
+            write_reports(job["json_path"], job["csv_path"], job["summary"], job["pages"])
+
+    return redirect(url_for("results_category", job_id=job_id, category=category))
+
+
 @app.route("/results/<job_id>")
 def results(job_id):
     with JOBS_LOCK:
@@ -197,6 +327,32 @@ def results(job_id):
         return redirect(url_for("progress", job_id=job_id))
     return render_template("results.html", job_id=job_id, filename=job["filename"],
                             summary=job["summary"], pages=job["pages"], lang=job["lang"])
+
+
+@app.route("/results/<job_id>/category/<category>")
+def results_category(job_id, category):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+    if job is None:
+        return "Job not found", 404
+    if job["status"] != "done":
+        return redirect(url_for("progress", job_id=job_id))
+    if category not in CATEGORY_FIELDS:
+        return "Unknown category", 404
+
+    field, label = CATEGORY_FIELDS[category]
+    filtered = [p for p in job["pages"] if p.get(field)]
+
+    return render_template("category.html", job_id=job_id, filename=job["filename"],
+                            label=label, category=category, pages=filtered)
+
+
+@app.route("/thumbnail/<job_id>/<int:page_num>")
+def thumbnail(job_id, page_num):
+    path = os.path.join(THUMBNAILS_DIR, job_id, f"page_{page_num}.jpg")
+    if not os.path.exists(path):
+        return "Not found", 404
+    return send_file(path, mimetype="image/jpeg")
 
 
 @app.route("/download/<job_id>/<fmt>")
