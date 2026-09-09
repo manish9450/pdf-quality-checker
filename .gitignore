@@ -1,7 +1,9 @@
+
 venv/
 __pycache__/
-*.pyc
-uploads/*
-reports/*
+build/
+dist/
+uploads/
+reports/
 thumbnails/
-.env
+tesseract_bundled/
