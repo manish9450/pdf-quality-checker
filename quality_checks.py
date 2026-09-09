@@ -1,5 +1,4 @@
-
-
+# pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 """
 quality_checks.py
@@ -9,10 +8,40 @@ PDF page is blank, blurry, skewed, or likely unreadable by a human.
 All processing is 100% local -- OpenCV + Tesseract, no internet required.
 """
 
+import sys
+import os
 import cv2
 import numpy as np
 import pytesseract
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+# --- Tesseract location ---
+# When this app is packaged into a standalone .exe (via PyInstaller),
+# we bundle Tesseract's binary + language data inside a
+# "tesseract_bundled" folder so the person running the exe never needs
+# to install anything separately. This block finds that bundled copy
+# automatically when running as a packaged exe, and otherwise falls
+# back to whatever Tesseract is already installed on this development
+# machine (so this still works unmodified during normal `python app.py`
+# development, using your existing separate Tesseract install).
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    # Running as a PyInstaller-built exe -- _MEIPASS is the temp folder
+    # PyInstaller extracts bundled files into at runtime.
+    _BASE_DIR = sys._MEIPASS
+else:
+    _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+_BUNDLED_TESSERACT = os.path.join(_BASE_DIR, "tesseract_bundled", "tesseract.exe")
+_COMMON_WINDOWS_INSTALL = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+if os.path.exists(_BUNDLED_TESSERACT):
+    pytesseract.pytesseract.tesseract_cmd = _BUNDLED_TESSERACT
+    os.environ["TESSDATA_PREFIX"] = os.path.join(_BASE_DIR, "tesseract_bundled", "tessdata")
+elif os.path.exists(_COMMON_WINDOWS_INSTALL):
+    # Not packaged yet -- normal development machine with Tesseract
+    # installed the regular way, same as your existing setup.
+    pytesseract.pytesseract.tesseract_cmd = _COMMON_WINDOWS_INSTALL
+# else: rely on Tesseract being available on the system PATH
 
 
 def pil_to_cv(pil_image):
@@ -38,16 +67,6 @@ def crop_margins(gray, pct=0.04):
     return gray[dy:h - dy, dx:w - dx]
 
 
-def denoise_for_blank_check(gray):
-    """
-    Light median-blur denoise, used ONLY for the blank-page check so that
-    small dust specks / scan noise don't cause an otherwise-blank page to
-    be misclassified. NOT used for blur/contrast (that would mask real
-    blur/fading, which is exactly what we're trying to measure there).
-    """
-    return cv2.medianBlur(gray, 5)
-
-
 def solid_dark_check(gray, dark_thresh=60, dark_ratio_thresh=0.85):
     """
     Returns (is_solid_dark: bool, dark_ratio: float)
@@ -62,20 +81,46 @@ def solid_dark_check(gray, dark_thresh=60, dark_ratio_thresh=0.85):
     return bool(dark_ratio >= dark_ratio_thresh), round(float(dark_ratio), 4)
 
 
-def blank_page_check(gray, ink_thresh=200, ink_ratio_thresh=0.004):
+def speckle_density(gray, target_width=600):
     """
-    Returns (is_blank: bool, ink_ratio: float)
-    A page is considered blank if almost no pixels are dark enough to be
-    actual ink/print -- regardless of whether the "background" is pure
-    white or has a gray cast (common with uneven scan lighting or
-    yellowed/aged paper). This is more robust than a strict whiteness
-    threshold, which false-negatives on blank pages that aren't
-    perfectly white.
+    Measures heavy scan noise/degradation (print-through, poor toner,
+    aged/damaged originals) that shows up as dense speckle texture --
+    a defect that Laplacian-variance blur detection completely misses,
+    since random speckle noise inflates that metric rather than
+    lowering it (confirmed: a heavily-degraded real page scored 4650 on
+    the "sharp" end of blur_score, purely from noise, while looking
+    genuinely unreadable to a human).
+
+    Works by counting tiny connected ink components after Otsu
+    thresholding -- genuine text is made of letter-sized components;
+    heavy speckle noise shows up as a very high density of tiny
+    (1-3 pixel) isolated specks per unit area. Reported as "blurry"
+    alongside the Laplacian check, since both describe the same
+    end-user concept ("this page is hard to read due to image
+    quality"), even though the underlying cause differs.
+
+    Calibration note: legitimate watermark patterns (common on Indian
+    stamp paper) also produce elevated speckle density (measured up to
+    ~53 on real watermarked pages), so the threshold used in
+    analyze_page is set above that, accepting some risk of missing
+    milder degradation in favor of not flagging normal watermarked
+    pages -- tune speckle_thresh there if real-world results suggest
+    otherwise.
     """
-    ink_pixels = np.sum(gray < ink_thresh)
-    total_pixels = gray.size
-    ink_ratio = ink_pixels / total_pixels
-    return bool(ink_ratio <= ink_ratio_thresh), round(float(ink_ratio), 4)
+    h, w = gray.shape
+    if w > target_width:
+        scale = target_width / w
+        small = cv2.resize(gray, None, fx=scale, fy=scale)
+    else:
+        small = gray
+    thresh = cv2.threshold(small, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(thresh, connectivity=8)
+    if num_labels <= 1:
+        return 0.0
+    areas = stats[1:, cv2.CC_STAT_AREA]  # skip background label
+    tiny_components = int(np.sum(areas <= 3))
+    density = tiny_components / (small.shape[0] * small.shape[1]) * 10000
+    return round(float(density), 2)
 
 
 def blur_score(gray, target_width=1500):
@@ -125,7 +170,7 @@ def contrast_score(gray):
     return round(bg_mean - ink_mean, 2)
 
 
-def skew_angle(gray, angle_range=15, step=0.5):
+def skew_angle(gray, angle_range=15, step=0.5, max_component_area_ratio=0.02):
     """
     Estimate rotation/skew angle in degrees using a projection-profile
     method: try rotating the page by a range of candidate angles, and
@@ -136,11 +181,31 @@ def skew_angle(gray, angle_range=15, step=0.5):
     This is far more robust than fitting a bounding box to scattered
     text blobs (the previous approach), which gives unreliable, often
     wildly wrong angles on pages with sparse text.
+
+    Before computing the profile, large solid connected components are
+    filtered out -- scanner smudges, ink bleed, or torn/damaged page
+    edges can appear as one big solid dark blob, which dominates the
+    row-sum profile and drags the "best" angle toward the search
+    boundary (confirmed: a page with a large edge smudge but genuinely
+    straight text spuriously returned -15.0, the exact edge of the
+    search range, until this filter was added). Real text is made of
+    many small separate connected components (individual characters),
+    not one large blob, so this keeps the profile focused on actual
+    text structure.
     """
     # Downsample for speed -- doesn't need full resolution to find skew
     scale = 600 / gray.shape[1] if gray.shape[1] > 600 else 1.0
     small = cv2.resize(gray, None, fx=scale, fy=scale) if scale != 1.0 else gray.copy()
     thresh = cv2.threshold(small, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
+
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(thresh, connectivity=8)
+    total_area = small.shape[0] * small.shape[1]
+    text_mask = np.zeros_like(thresh)
+    for label_id in range(1, num_labels):  # label 0 is background, skip it
+        area = stats[label_id, cv2.CC_STAT_AREA]
+        if area / total_area <= max_component_area_ratio:
+            text_mask[labels == label_id] = 255
+    thresh = text_mask
 
     if np.sum(thresh > 0) < 50:  # not enough content to judge
         return 0.0
@@ -208,25 +273,46 @@ def classify_page_type(gray, word_count, ocr_conf):
 
 def analyze_page(pil_image, blur_thresh=30.0, contrast_thresh=80.0,
                   skew_thresh=5.0, ocr_conf_thresh=40.0, ocr_lang="eng+hin",
-                  ink_definite_blank_thresh=0.0005, ink_ambiguous_thresh=0.004,
-                  blank_ocr_word_override=3):
+                  blank_definite_thresh=0.003, blank_candidate_thresh=0.05,
+                  blank_ocr_word_override=5, speckle_thresh=60.0):
     """
     Run the full quality pipeline on a single page image.
     Returns a dict report for that page.
 
-    Blank detection is two-tier, not a single pixel threshold:
-    - ink_ratio <= ink_definite_blank_thresh: obviously blank (confirmed
-      against real scanned documents -- genuine blank pages measured
-      0.0000-0.0015 ink ratio). Skip OCR entirely here, it's wasted work.
-    - ink_definite_blank_thresh < ink_ratio <= ink_ambiguous_thresh:
-      genuinely ambiguous zone. A real bank-statement page (mostly
-      whitespace, one small transaction table) measured 0.0019 -- barely
-      above a genuine blank page's 0.0015. No fixed pixel threshold can
-      safely separate cases this close, so instead of guessing, OCR runs
-      as a tiebreaker: if it finds a handful of real words, the page is
-      NOT blank, regardless of how sparse the ink is.
-    - ink_ratio > ink_ambiguous_thresh: confidently not blank, no
-      tiebreaker needed.
+    Blank detection is two-tier, using RAW (non-denoised) ink ratio:
+      - ink_ratio <= blank_definite_thresh (~0.3%): genuinely ambiguous
+        zone -- could be truly blank, or a sparse page with real typed
+        content that just has a lot of whitespace (confirmed case: a
+        bank statement page with a small transaction table measured
+        under 0.2% ink). OCR runs as a tiebreaker here: finding
+        blank_ocr_word_override or more real words overrides the blank
+        verdict.
+      - blank_definite_thresh < ink_ratio <= blank_candidate_thresh
+        (~0.3%-5%): there are CLEARLY visible marks on the page -- too
+        much ink to plausibly be a blank sheet, confirmed against two
+        real cases that must NOT be called blank: a page with sparse
+        handwritten notes (OCR could only read a few garbled tokens,
+        not real words) and a page with heavy scan noise/degradation
+        (OCR found nothing at all). Both have visible content a human
+        can see, just content that's hard or impossible for OCR to
+        parse -- so this zone is never called blank regardless of what
+        OCR finds. It falls through to normal processing instead, and
+        gets flagged low_ocr_confidence if warranted.
+      - ink_ratio > blank_candidate_thresh: definitely not blank.
+
+    Ink ratio deliberately uses the RAW cropped grayscale, not a
+    denoised version. An earlier version ran a median blur first to
+    avoid dust specks tripping up detection on scanner edges -- but
+    that's already handled by crop_margins() removing the edge region,
+    and the median blur turned out to actively erase real content:
+    confirmed on a heavily-degraded/noisy real page where median
+    blurring collapsed a genuine 2.7% ink ratio down to 0.02%, making a
+    clearly-marked page look artificially blank.
+
+    OCR runs for every page except solid-dark ones (nothing to read on
+    a solid black/dark page), since it's needed both as the blank
+    tiebreaker (in the ambiguous zone) and for the normal
+    low_ocr_confidence check either way.
     """
     cv_img = pil_to_cv(pil_image)
     gray_full = to_gray(cv_img)
@@ -235,18 +321,8 @@ def analyze_page(pil_image, blur_thresh=30.0, contrast_thresh=80.0,
     # before running any of the checks below.
     gray = crop_margins(gray_full)
 
-    # Blank check uses a lightly denoised version so small dust specks
-    # left after cropping don't cause a false "not blank" result.
-    denoised = denoise_for_blank_check(gray)
-    ink_pixels = int(np.sum(denoised < 200))
-    ink_ratio_blank = round(float(ink_pixels / denoised.size), 4)
-
-    if ink_ratio_blank <= ink_definite_blank_thresh:
-        blank_zone = "definite"
-    elif ink_ratio_blank <= ink_ambiguous_thresh:
-        blank_zone = "ambiguous"
-    else:
-        blank_zone = "not_blank"
+    ink_pixels = int(np.sum(gray < 200))
+    ink_ratio_blank = round(float(ink_pixels / gray.size), 4)
 
     # Solid-dark-page check -- a different failure mode than blur
     # (e.g. scanner bed showing through, unopened section).
@@ -255,20 +331,15 @@ def analyze_page(pil_image, blur_thresh=30.0, contrast_thresh=80.0,
     b_score = blur_score(gray)
     c_score = contrast_score(gray)
 
-    # Only skip OCR when we're already confident there's nothing to read
-    # (definite blank or solid dark). Ambiguous-zone and normal pages
-    # both need it -- ambiguous as a tiebreaker, normal pages for the
-    # regular low_ocr_confidence check further down.
-    need_ocr = (not is_solid_dark) and (blank_zone != "definite")
-    conf, word_count = ocr_confidence(cv_img, lang=ocr_lang) if need_ocr else (0.0, 0)
+    conf, word_count = (0.0, 0) if is_solid_dark else ocr_confidence(cv_img, lang=ocr_lang)
 
-    if is_solid_dark:
-        is_blank = False  # solid dark is reported as its own separate category
-    elif blank_zone == "definite":
-        is_blank = True
-    elif blank_zone == "ambiguous":
-        is_blank = word_count < blank_ocr_word_override  # OCR tiebreaker
+    if ink_ratio_blank <= blank_definite_thresh:
+        # Ambiguous zone -- trust OCR as the tiebreaker.
+        is_blank = bool((not is_solid_dark) and (word_count < blank_ocr_word_override))
     else:
+        # Above the "definitely could be blank" range -- if there's
+        # visible ink at all (up to blank_candidate_thresh) or more,
+        # it's not blank, full stop, regardless of OCR results.
         is_blank = False
 
     # Once the blank verdict is final, zero out OCR results for blank/
@@ -288,6 +359,18 @@ def analyze_page(pil_image, blur_thresh=30.0, contrast_thresh=80.0,
         page_type = classify_page_type(gray, word_count, conf)
 
     is_blurry = bool((not skip_content_checks) and (b_score < blur_thresh))
+    speckle = 0.0 if skip_content_checks else speckle_density(gray)
+    # Speckle/noise degradation only counts as "blurry" alongside a low
+    # OCR word count. Confirmed on real documents: pages with heavy
+    # surface grain but genuinely readable content (OCR finding 100+
+    # real words, high confidence) were being wrongly flagged blurry
+    # from speckle density alone -- while the actual degraded pages this
+    # check was built for (page content OCR essentially couldn't read)
+    # all measured well under 20 recognized words. A high word count is
+    # hard-to-fake direct evidence the page is genuinely readable,
+    # regardless of how grainy it looks superficially.
+    if not skip_content_checks and speckle > speckle_thresh and word_count < 20:
+        is_blurry = True
     is_low_contrast = bool((not skip_content_checks) and (c_score < contrast_thresh))
     is_skewed = bool(abs(skew) > skew_thresh)
     is_low_ocr_conf = bool((not skip_content_checks) and (page_type in ("text", "mixed")) and (conf < ocr_conf_thresh))
@@ -323,6 +406,7 @@ def analyze_page(pil_image, blur_thresh=30.0, contrast_thresh=80.0,
         "solid_dark_page": is_solid_dark,
         "dark_ratio": dark_ratio,
         "blur_score": b_score,
+        "speckle_density": speckle,
         "is_blurry": is_blurry,
         "contrast_score": c_score,
         "is_low_contrast": is_low_contrast,

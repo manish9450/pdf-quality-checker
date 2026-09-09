@@ -96,6 +96,80 @@ button:disabled {
     margin: 28px 0;
 }
 
+.progress-layout {
+    display: flex;
+    gap: 32px;
+    align-items: center;
+    margin-top: 24px;
+}
+
+.scan-frame {
+    position: relative;
+    width: 240px;
+    height: 300px;
+    flex-shrink: 0;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #fafafa;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+
+.scan-frame img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+}
+
+.progress-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.progress-info .progress-wrap {
+    margin: 0 0 16px 0;
+}
+
+.progress-info .hint {
+    margin-top: 10px;
+}
+
+@media (max-width: 640px) {
+    .progress-layout {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .scan-frame {
+        width: 100%;
+        height: 260px;
+        margin: 0 auto;
+        max-width: 240px;
+    }
+}
+
+.scan-line {
+    position: absolute;
+    left: 0;
+    width: 100%;
+    height: 3px;
+    top: 0;
+    background: linear-gradient(90deg, transparent, #4ade80, transparent);
+    box-shadow: 0 0 10px 2px rgba(74, 222, 128, 0.7);
+    animation: scan-move 1.8s linear infinite;
+}
+
+@keyframes scan-move {
+    0%   { top: 0%; }
+    100% { top: 100%; }
+}
+
+.progress-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 20px;
+}
+
 .progress-bar {
     background: #eee;
     border-radius: 20px;
@@ -213,6 +287,8 @@ a.stat-link:hover {
     border-radius: 6px;
     border: 1px solid #ddd;
     background: #fff;
+    padding: 0;
+    cursor: pointer;
 }
 
 .page-card-thumb img {
@@ -258,6 +334,52 @@ a.stat-link:hover {
     font-weight: 600;
 }
 
+.lightbox {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.88);
+    z-index: 1000;
+    text-align: center;
+    cursor: zoom-out;
+}
+
+.lightbox.open {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+.lightbox img {
+    max-width: 90vw;
+    max-height: 85vh;
+    border-radius: 4px;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+    cursor: default;
+}
+
+.lightbox-caption {
+    color: #fff;
+    font-size: 14px;
+    margin-bottom: 14px;
+    font-weight: 600;
+}
+
+.lightbox-close {
+    position: absolute;
+    top: 18px;
+    right: 28px;
+    color: #fff;
+    font-size: 32px;
+    font-weight: 300;
+    cursor: pointer;
+    line-height: 1;
+}
+
 .stat-num {
     display: block;
     font-size: 22px;
@@ -273,6 +395,39 @@ a.stat-link:hover {
 
 .downloads {
     margin: 20px 0 10px 0;
+}
+
+.cleaned-pdf-box {
+    background: #f6f9ff;
+    border: 1px solid #dbe6fb;
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin: 20px 0;
+}
+
+.cleaned-pdf-box h2 {
+    margin-top: 0;
+    border-top: none;
+    padding-top: 0;
+    font-size: 16px;
+}
+
+.btn-primary {
+    background: #1a56db;
+    color: #fff;
+    border: none;
+    padding: 10px 18px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-block;
+    margin-top: 6px;
+}
+
+.btn-primary:hover {
+    background: #1544b0;
 }
 
 table {

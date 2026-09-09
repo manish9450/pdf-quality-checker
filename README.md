@@ -190,8 +190,8 @@ connection is used or required.
   in memory; restarting the app clears any in-progress or completed
   jobs. Fine for local personal use, not meant for multiple people
   hitting it at once.
-- **No page thumbnails/previews yet** -- you see the numbers and flags
-  per page, not the image itself. Worth adding next if useful to you.
+- **Page thumbnails accumulate on disk** in `webapp/thumbnails/` per job,
+  same as uploads/reports -- nothing gets auto-cleaned yet.
 - **No authentication** -- anyone with access to your machine on port
   5000 could use it. Not a concern for local-only use (it only binds
   to 127.0.0.1, not your network), but don't run this on a shared/
@@ -204,6 +204,90 @@ This is a prototype meant to be iterated on -- tell me what's
 missing or annoying and we'll improve it (thumbnails, drag-and-drop,
 batch processing multiple PDFs, dark mode, whatever's actually useful
 for your workflow).
+
+## Packaging into a standalone .exe (no browser, no separate installs)
+
+This turns the web app into something that behaves like normal desktop
+software: double-click, a window opens directly (no browser tab, no
+address bar), works without anyone installing Python, Tesseract, or
+any pip packages separately.
+
+**What's been tested and confirmed working** (validated in a Linux
+sandbox using GTK/WebKit as a stand-in for Windows' WebView2 -- the
+same underlying Python code path, different native renderer):
+- Flask running in a background thread while pywebview's native window
+  loads it live -- no deadlock, no blocking between the GUI event loop
+  and the web server
+- A full PyInstaller build correctly bundling Flask, OpenCV, PyMuPDF,
+  pytesseract, and pywebview together
+- The **packaged binary itself** (not just the raw script) correctly
+  finding and serving its bundled `templates/` and `static/` folders --
+  this is the most common way PyInstaller + Flask breaks, and it works
+
+**What can only be confirmed on your actual Windows machine** (I can't
+test these from here):
+- The real Windows build (this sandbox can only produce a Linux binary
+  to validate the bundling logic)
+- Bundling your actual `tesseract.exe` + its DLLs + language data
+- WebView2 rendering specifically (should be a drop-in equivalent to
+  what was tested, since pywebview abstracts this, but hasn't been
+  directly observed)
+
+### Steps to build it yourself
+
+**1. Install the two new dependencies**
+```powershell
+pip install pywebview pyinstaller
+```
+
+**2. Bundle your Tesseract install into the project**
+
+Copy your entire `C:\Program Files\Tesseract-OCR\` folder into
+`webapp\tesseract_bundled\` (so you end up with
+`webapp\tesseract_bundled\tesseract.exe`,
+`webapp\tesseract_bundled\tessdata\*.traineddata`, and all the
+supporting DLLs alongside them). `quality_checks.py` already knows to
+look for this folder automatically -- no path editing needed.
+
+**3. Uncomment one line in `desktop_app.spec`**
+
+Open it and uncomment:
+```python
+# ('tesseract_bundled', 'tesseract_bundled'),
+```
+so PyInstaller actually includes the folder you just copied in.
+
+**4. Build**
+```powershell
+cd webapp
+pyinstaller desktop_app.spec
+```
+
+This builds in "onedir" mode (a folder containing the exe + its
+dependencies as visible files) rather than a single self-extracting
+exe -- onedir tends to trigger far fewer antivirus false positives,
+since self-extracting exes match a pattern malware droppers also use.
+The tradeoff is you're sharing a folder instead of one file; zip it up
+before sending it to someone.
+
+**5. Test it**
+
+Your built app is at `dist\PDFQualityChecker\PDFQualityChecker.exe`.
+Double-click it -- a window should open directly, no browser, no
+console. Try uploading a real PDF end-to-end, including the OCR step,
+to confirm the bundled Tesseract copy actually works.
+
+### Things to expect
+
+- **Windows SmartScreen warning** on first run, since this is an
+  unsigned exe from an unrecognized publisher -- expected, not a sign
+  anything's broken. Whoever you send it to just clicks "More info" →
+  "Run anyway".
+- **Total size** will land somewhere in the few-hundred-MB range once
+  Tesseract + language packs are included -- fine for sharing via
+  Drive/USB, not a tiny download.
+- If antivirus flags it, that's a known PyInstaller quirk (see above on
+  onedir vs onefile) rather than an indication of a real problem.
 
 ## Next steps you could add later
 

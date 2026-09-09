@@ -6,32 +6,65 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-    <div class="container">
+    <div class="container wide">
         <h1>Analyzing PDF</h1>
         <p class="subtitle">{{ filename }}</p>
 
-        <div class="progress-wrap">
-            <div class="progress-bar">
-                <div class="progress-fill" id="progress-fill" style="width: 0%;"></div>
+        <div class="progress-layout">
+            <div class="scan-frame" id="scan-frame" style="display:none;">
+                <img id="page-preview" src="" alt="Currently analyzing page">
+                <div class="scan-line"></div>
             </div>
-            <p id="progress-text">Starting...</p>
+
+            <div class="progress-info">
+                <div class="progress-wrap">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progress-fill" style="width: 0%;"></div>
+                    </div>
+                    <p id="progress-text">Starting...</p>
+                </div>
+
+                <p class="hint">This runs entirely on your machine. Larger PDFs with OCR can take a while -- feel free to leave this tab open and come back.</p>
+
+                <div class="progress-actions">
+                    <button type="button" id="stop-btn" class="btn-secondary" onclick="stopAnalysis()">Stop</button>
+                    <button type="button" id="back-btn" class="btn-secondary" onclick="goBack()">&larr; Back, pick a different PDF</button>
+                </div>
+
+                <div id="error-box" class="error-box" style="display:none;"></div>
+                <div id="cancelled-box" class="hint" style="display:none; margin-top:14px;">Analysis stopped. Nothing was saved for this run.</div>
+            </div>
         </div>
-
-        <p class="hint">This runs entirely on your machine. Larger PDFs with OCR can take a while -- feel free to leave this tab open and come back.</p>
-
-        <div id="error-box" class="error-box" style="display:none;"></div>
     </div>
 
     <script>
         const jobId = "{{ job_id }}";
+        let polling = true;
+
+        function updatePreview(current) {
+            if (current > 0) {
+                document.getElementById('scan-frame').style.display = 'block';
+                document.getElementById('page-preview').src =
+                    `/progress/${jobId}/live_image?page=${current}&t=${Date.now()}`;
+            }
+        }
 
         function poll() {
+            if (!polling) return;
             fetch(`/status/${jobId}`)
                 .then(r => r.json())
                 .then(data => {
+                    if (!polling) return;
+
                     if (data.status === 'error') {
                         document.getElementById('error-box').style.display = 'block';
                         document.getElementById('error-box').textContent = 'Error: ' + data.error;
+                        document.getElementById('stop-btn').style.display = 'none';
+                        return;
+                    }
+                    if (data.status === 'cancelled') {
+                        document.getElementById('cancelled-box').style.display = 'block';
+                        document.getElementById('stop-btn').style.display = 'none';
                         return;
                     }
                     if (data.status === 'done') {
@@ -44,10 +77,30 @@
                     document.getElementById('progress-fill').style.width = pct + '%';
                     document.getElementById('progress-text').textContent =
                         total > 0 ? `Page ${current} of ${total} (${pct}%)` : 'Starting...';
+                    updatePreview(current);
                     setTimeout(poll, 1000);
                 })
                 .catch(() => setTimeout(poll, 2000));
         }
+
+        function stopAnalysis() {
+            polling = false;
+            document.getElementById('stop-btn').disabled = true;
+            document.getElementById('stop-btn').textContent = 'Stopping...';
+            fetch(`/jobs/${jobId}/cancel`, { method: 'POST' })
+                .then(() => {
+                    document.getElementById('cancelled-box').style.display = 'block';
+                    document.getElementById('stop-btn').style.display = 'none';
+                });
+        }
+
+        function goBack() {
+            polling = false;
+            fetch(`/jobs/${jobId}/cancel`, { method: 'POST' }).finally(() => {
+                window.location.href = '/';
+            });
+        }
+
         poll();
     </script>
 </body>

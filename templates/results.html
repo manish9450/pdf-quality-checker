@@ -47,6 +47,25 @@
             <a href="/" class="btn-secondary">Analyze another PDF</a>
         </div>
 
+        {% set unreadable_pages = pages | selectattr('likely_unreadable') | map(attribute='page') | list %}
+        <div class="cleaned-pdf-box">
+            <h2>Cleaned PDF</h2>
+            {% if unreadable_pages | length == 0 %}
+                <p class="hint">No pages are flagged likely-unreadable -- there's nothing to remove.</p>
+            {% else %}
+                <p class="hint">
+                    Removes {{ unreadable_pages | length }} page{{ 's' if unreadable_pages|length != 1 else '' }}
+                    flagged <strong>likely unreadable</strong> (blank, solid-dark, or blurry/low-contrast pages
+                    where OCR also failed): page{{ 's' if unreadable_pages|length != 1 else '' }}
+                    {{ unreadable_pages | join(', ') }}.
+                    Skewed and low-OCR-confidence-only pages are kept -- they still contain real,
+                    readable content, just harder for OCR specifically. This creates a new file;
+                    your original PDF is never modified.
+                </p>
+                <a href="/results/{{ job_id }}/download_cleaned" class="btn-primary">Download cleaned PDF</a>
+            {% endif %}
+        </div>
+
         <h2>Flagged pages</h2>
         {% set flagged = pages | selectattr('issues') | list %}
         {% if flagged | length == 0 %}

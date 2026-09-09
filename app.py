@@ -66,7 +66,7 @@ def pdf_to_page_images(pdf_path, dpi=300):
 
 
 CSV_FIELDNAMES = ["page", "blank", "ink_ratio", "solid_dark_page", "dark_ratio",
-                   "blur_score", "is_blurry", "contrast_score", "is_low_contrast",
+                   "blur_score", "speckle_density", "is_blurry", "contrast_score", "is_low_contrast",
                    "skew_angle", "is_skewed", "ocr_confidence", "word_count",
                    "page_type", "likely_unreadable", "issues", "human_overrides"]
 
@@ -122,6 +122,25 @@ def save_thumbnail(job_id, page_num, pil_img, target_width=900):
                                "JPEG", quality=80)
 
 
+def save_live_preview(job_id, pil_img, target_width=500):
+    """
+    Overwrites a single fixed-name preview image for this job, showing
+    whichever page is CURRENTLY being analyzed -- used for the "scanning
+    in progress" display on the progress page, regardless of whether
+    that page ends up flagged or clean (unlike save_thumbnail, which
+    only keeps images for flagged pages). Kept smaller/lighter than the
+    flagged-page thumbnails since this is a fast-changing live preview,
+    not something kept for later inspection.
+    """
+    job_thumb_dir = os.path.join(THUMBNAILS_DIR, job_id)
+    os.makedirs(job_thumb_dir, exist_ok=True)
+    w, h = pil_img.size
+    target_h = int(h * (target_width / w))
+    preview = pil_img.resize((target_width, target_h), Image.LANCZOS)
+    preview.convert("RGB").save(os.path.join(job_thumb_dir, "live_preview.jpg"),
+                                 "JPEG", quality=70)
+
+
 def run_analysis(job_id, pdf_path, ocr_lang, original_filename):
     """Runs in a background thread; updates JOBS[job_id] as it progresses."""
     try:
@@ -134,7 +153,16 @@ def run_analysis(job_id, pdf_path, ocr_lang, original_filename):
             JOBS[job_id]["status"] = "running"
 
         results = []
+        cancelled = False
         for page_num, pil_img in pdf_to_page_images(pdf_path):
+            with JOBS_LOCK:
+                if JOBS[job_id].get("cancel_requested"):
+                    cancelled = True
+            if cancelled:
+                break
+
+            save_live_preview(job_id, pil_img)
+
             report = analyze_page(pil_img, ocr_lang=ocr_lang)
             report["page"] = page_num
             report["human_overrides"] = []  # audit trail of any manual corrections
@@ -143,6 +171,11 @@ def run_analysis(job_id, pdf_path, ocr_lang, original_filename):
             results.append(report)
             with JOBS_LOCK:
                 JOBS[job_id]["current"] = page_num
+
+        if cancelled:
+            with JOBS_LOCK:
+                JOBS[job_id]["status"] = "cancelled"
+            return
 
         summary = compute_summary(results)
 
@@ -194,6 +227,8 @@ def analyze():
             "total": 0,
             "filename": file.filename,
             "lang": ocr_lang,
+            "cancel_requested": False,
+            "pdf_path": pdf_path,
         }
 
     thread = threading.Thread(target=run_analysis, args=(job_id, pdf_path, ocr_lang, file.filename))
@@ -222,6 +257,29 @@ def status(job_id):
         "total": job.get("total", 0),
         "error": job.get("error"),
     })
+
+
+@app.route("/jobs/<job_id>/cancel", methods=["POST"])
+def cancel_job(job_id):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if job is None:
+            return jsonify({"ok": False, "error": "not found"}), 404
+        job["cancel_requested"] = True
+    return jsonify({"ok": True})
+
+
+@app.route("/progress/<job_id>/live_image")
+def live_image(job_id):
+    path = os.path.join(THUMBNAILS_DIR, job_id, "live_preview.jpg")
+    if not os.path.exists(path):
+        return "Not found", 404
+    response = send_file(path, mimetype="image/jpeg")
+    # Always fetch fresh -- this file gets overwritten every page, and
+    # both browsers and pywebview's WebView2 will happily cache an
+    # image URL otherwise, showing a stale page during the scan.
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    return response
 
 
 CATEGORY_FIELDS = {
@@ -365,6 +423,59 @@ def download(job_id, fmt):
     if not path or not os.path.exists(path):
         return "File not found", 404
     return send_file(path, as_attachment=True)
+
+
+@app.route("/results/<job_id>/download_cleaned")
+def download_cleaned(job_id):
+    """
+    Builds a copy of the original PDF with only the "likely_unreadable"
+    pages removed (blank, solid-dark, or blurry/low-contrast pages
+    where OCR also failed) -- respecting any manual "Mark as OK"
+    overrides, since a human-confirmed-fine page should never be
+    silently dropped.
+
+    Deliberately does NOT remove merely-skewed or low-OCR-confidence-
+    only pages: skew doesn't destroy content (just rotates it), and low
+    OCR confidence alone often just means the content is handwritten or
+    otherwise hard for Tesseract specifically, not that a human can't
+    read it. Removing those would risk deleting genuine, complete
+    content from what may be a legal/official document -- this only
+    removes pages already judged to have no retrievable content at all.
+
+    Always writes to a NEW file; the original upload is never modified.
+    """
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+    if job is None or job.get("status") != "done":
+        return "Job not found or not ready", 404
+
+    pdf_path = job.get("pdf_path")
+    if not pdf_path or not os.path.exists(pdf_path):
+        return "Original PDF no longer available", 404
+
+    exclude_pages = sorted(p["page"] for p in job["pages"] if p["likely_unreadable"])
+
+    src = fitz.open(pdf_path)
+    total = src.page_count
+    keep = [i for i in range(total) if (i + 1) not in exclude_pages]  # fitz is 0-indexed
+
+    if len(keep) == 0:
+        src.close()
+        return ("Every page in this document is flagged likely-unreadable, so a cleaned "
+                "PDF would be empty. Review the results before removing pages."), 400
+
+    if len(keep) == total:
+        src.close()
+        return "No likely-unreadable pages found -- there's nothing to remove.", 400
+
+    src.select(keep)
+    base = os.path.splitext(job["filename"])[0]
+    out_path = os.path.join(REPORTS_DIR, f"{base}_cleaned_{job_id}.pdf")
+    src.save(out_path)
+    src.close()
+
+    return send_file(out_path, as_attachment=True,
+                      download_name=f"{base}_cleaned.pdf")
 
 
 if __name__ == "__main__":
